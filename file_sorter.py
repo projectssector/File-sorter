@@ -206,16 +206,19 @@ class FileSorterApp:
 
         self.tree = ttk.Treeview(
             card,
-            columns=("hotkey", "folder"),
+            columns=("status", "hotkey", "folder"),
             show="headings",
             selectmode="browse",
             style="FileSorter.Treeview",
         )
+        self.tree.heading("status", text="READY", anchor="center")
         self.tree.heading("hotkey", text="HOTKEY", anchor="w")
         self.tree.heading("folder", text="DESTINATION FOLDER", anchor="w")
-        self.tree.column("hotkey", width=150, minwidth=100, stretch=False, anchor="w")
-        self.tree.column("folder", width=620, minwidth=300, stretch=True, anchor="w")
+        self.tree.column("status", width=70, minwidth=60, stretch=False, anchor="center")
+        self.tree.column("hotkey", width=130, minwidth=90, stretch=False, anchor="w")
+        self.tree.column("folder", width=600, minwidth=300, stretch=True, anchor="w")
         self.tree.grid(row=0, column=0, sticky="nsew", padx=(12, 0), pady=12)
+        self.tree.tag_configure("missing", foreground=DANGER)
         self.tree.tag_configure("odd", background=CARD)
         self.tree.tag_configure("even", background="#1a222c")
         self.tree.bind("<Double-1>", lambda _event: self.edit_selected())
@@ -391,12 +394,17 @@ class FileSorterApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         for index, command in enumerate(self.active):
+            folder = command.get("folder", "")
+            status = "\u2713" if os.path.isdir(folder) else "\u2717"
             self.tree.insert(
                 "",
                 "end",
                 iid=str(index),
-                values=(command["hotkey"], command["folder"]),
-                tags=("even" if index % 2 else "odd",),
+                values=(status, command["hotkey"], folder),
+                tags=(
+                    ("even" if index % 2 else "odd",)
+                    + (("missing",) if not os.path.isdir(folder) else ())
+                ),
             )
         if self.active:
             self.empty_label.place_forget()

@@ -524,7 +524,7 @@ class ImageSorterWindow(tk.Frame):
         info.pack(side="left", fill="x", expand=True, pady=8)
         title = tk.Label(
             info,
-            text=name,
+            text=name + ("  \u2713" if os.path.isdir(folder) else "  \u2717"),
             bg=CARD_2,
             fg=TEXT,
             font=(FONT, 10, "bold"),
