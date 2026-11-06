@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+
+# Build outputs
+build/
+dist/
+installer_output/
+*.spec.bak
+
+# Logs
+@AutomationLog.txt
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Keep release binaries at repo root
+!FileSorter.exe
+!FileSorterSetup.exe
