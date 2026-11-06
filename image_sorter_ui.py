@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -31,6 +33,7 @@ from sorter_core import (
     keysym_to_vk,
     move_single_file,
     parse_hotkey,
+    unique_target,
     restore_moved_file,
     short_path,
     vk_from_char,
@@ -58,6 +61,12 @@ class ImageSorterWindow(tk.Frame):
         self.configure(bg=BG)
 
         self._images: list[str] = []
+        self._all_images: list[str] = []
+        self._moved: set[str] = set()
+        self._sectors: list[list[str]] = []
+        self._sector_index = 0
+        self._sector_size = 2000
+        self._loading_images = False
         self._index = 0
         self._photo = None
         self._placeholder = ImageTk.PhotoImage(
@@ -211,6 +220,16 @@ class ImageSorterWindow(tk.Frame):
             justify="left",
         )
         self.meta_label.pack(fill="x", pady=(2, 0))
+        self.sector_label = tk.Label(
+            info,
+            text="",
+            bg=CARD,
+            fg=ACCENT,
+            font=(FONT, 9, "bold"),
+            anchor="w",
+            justify="left",
+        )
+        self.sector_label.pack(fill="x", pady=(4, 0))
 
         strip_wrap = tk.Frame(card, bg=CARD)
         strip_wrap.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 10))
@@ -523,30 +542,137 @@ class ImageSorterWindow(tk.Frame):
     # -- files ----------------------------------------------------------
 
     def add_files(self, paths) -> None:
-        images = collect_image_files(paths)
-        existing = {
-            os.path.normcase(os.path.abspath(path)) for path in self._images
-        }
+        if self._loading_images:
+            self._set_status("Already loading images...")
+            return
+        self._loading_images = True
+        self._set_status("Loading images...")
+        self._update_sector_label()
+        threading.Thread(
+            target=self._load_images_worker, args=(list(paths or []),), daemon=True
+        ).start()
+
+    def _load_images_worker(self, paths) -> None:
+        try:
+            images = self._collect_with_no_preview(paths)
+        except Exception:
+            images = []
+        self.app._ui(self._apply_loaded_images, images)
+
+    def _collect_with_no_preview(self, paths) -> list[str]:
+        from sorter_core import collect_image_files, is_image_file, is_previewable_image
+
+        for raw in paths or []:
+            candidate = Path(str(raw).strip().strip('"'))
+            try:
+                if not candidate.is_dir():
+                    continue
+                no_preview = candidate / "no_preview"
+                for entry in list(candidate.iterdir()):
+                    if not entry.is_file() or not is_image_file(str(entry)):
+                        continue
+                    if is_previewable_image(str(entry)):
+                        continue
+                    no_preview.mkdir(exist_ok=True)
+                    target = unique_target(no_preview, entry.name)
+                    try:
+                        shutil.move(str(entry), str(target))
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        return collect_image_files(paths)
+
+    def _apply_loaded_images(self, images) -> None:
+        self._loading_images = False
+        existing = {os.path.normcase(os.path.abspath(path)) for path in self._all_images}
         added = 0
-        for image in images:
+        for image in images or []:
             key = os.path.normcase(os.path.abspath(image))
             if key in existing:
                 continue
             existing.add(key)
-            self._images.append(image)
+            self._all_images.append(image)
             added += 1
-        if added:
-            if self._index >= len(self._images):
-                self._index = 0
+        if not added:
+            if images:
+                self._set_status("Those images are already in the list.")
+            else:
+                self._set_status("No supported image files were found.")
+            self._update_sector_label()
+            self._update_info()
+            if not self._images and self._all_images:
+                self._load_first_nonempty_sector()
+            return
+        self._set_status(str(added) + " image(s) added.")
+        if not self._images:
+            self._sector_index = 0
+            self._load_sector(0)
+        else:
+            self._update_sector_label()
+            self._update_counts()
+            self._update_info()
             self._rebuild_strip()
             self._render_preview()
-            self._update_counts()
-            self._set_status(str(added) + " image(s) added.")
-        elif images:
-            self._set_status("Those images are already in the list.")
-        else:
-            self._set_status("No supported image files were found.")
+
+    def _load_first_nonempty_sector(self) -> None:
+        total = self._sector_total()
+        for index in range(total):
+            images = self._sector_images(index)
+            if images:
+                self._load_sector(index)
+                return
+        self._images = []
+        self._render_preview()
+        self._update_counts()
+        self._update_sector_label()
         self._update_info()
+
+    def _sector_total(self) -> int:
+        if not self._all_images:
+            return 0
+        return (len(self._all_images) + self._sector_size - 1) // self._sector_size
+
+    def _sector_images(self, index: int) -> list[str]:
+        start = index * self._sector_size
+        end = start + self._sector_size
+        return [
+            path
+            for path in self._all_images[start:end]
+            if os.path.normcase(os.path.abspath(path)) not in self._moved
+        ]
+
+    def _load_sector(self, index: int) -> None:
+        total = self._sector_total()
+        if total == 0:
+            self._images = []
+            self._sector_index = 0
+            self._render_preview()
+            self._update_counts()
+            self._update_sector_label()
+            self._update_info()
+            return
+        if index < 0:
+            index = total - 1
+        if index >= total:
+            index = 0
+        self._sector_index = index
+        self._images = self._sector_images(index)
+        if self._index >= len(self._images):
+            self._index = 0
+        self._rebuild_strip()
+        self._render_preview()
+        self._update_counts()
+        self._update_sector_label()
+        self._update_info()
+        if self._images:
+            self.after(0, self._show_sector_change)
+
+    def _show_sector_change(self) -> None:
+        total = self._sector_total()
+        self._set_status(
+            "Sector " + str(self._sector_index + 1) + " of " + str(total) + " ready."
+        )
 
     def _add_files_dialog(self) -> None:
         files = filedialog.askopenfilenames(
@@ -714,19 +840,70 @@ class ImageSorterWindow(tk.Frame):
         else:
             text = "0 images"
         self.count_label.configure(text=text)
+        self._update_sector_label()
+
+    def _update_sector_label(self) -> None:
+        try:
+            if not self._all_images:
+                self.sector_label.configure(text="")
+                return
+            total_sectors = self._sector_total()
+            remaining_total = len(self._all_images) - len(self._moved)
+            text = (
+                "Sector "
+                + str(self._sector_index + 1)
+                + " of "
+                + str(total_sectors)
+                + "  |  "
+                + str(len(self._images))
+                + " in this sector  |  "
+                + str(remaining_total)
+                + " remaining total"
+            )
+            if self._loading_images:
+                text += "  |  Loading next images..."
+            self.sector_label.configure(text=text, fg=ACCENT)
+        except Exception:
+            pass
 
     def previous_image(self) -> None:
         if not self._images:
+            if self._sector_index > 0:
+                self._load_sector(self._sector_index - 1)
+                if self._images:
+                    self._index = len(self._images) - 1
+                    self._render_preview()
+                    self._update_counts()
+                    self._scroll_to_current_thumb()
             return
-        self._index = (self._index - 1) % len(self._images)
+        if self._index == 0 and self._sector_index > 0:
+            self._load_sector(self._sector_index - 1)
+            if self._images:
+                self._index = len(self._images) - 1
+        else:
+            self._index = (self._index - 1) % len(self._images)
         self._render_preview()
         self._update_counts()
         self._scroll_to_current_thumb()
 
     def next_image(self) -> None:
         if not self._images:
+            total = self._sector_total()
+            if self._sector_index + 1 < total:
+                self._load_sector(self._sector_index + 1)
+                self._index = 0
+                self._render_preview()
+                self._update_counts()
+                self._scroll_to_current_thumb()
             return
-        self._index = (self._index + 1) % len(self._images)
+        if (
+            self._index == len(self._images) - 1
+            and self._sector_index + 1 < self._sector_total()
+        ):
+            self._load_sector(self._sector_index + 1)
+            self._index = 0
+        else:
+            self._index = (self._index + 1) % len(self._images)
         self._render_preview()
         self._update_counts()
         self._scroll_to_current_thumb()
@@ -874,11 +1051,17 @@ class ImageSorterWindow(tk.Frame):
             self.app.show_toast("Could not move file", result, "error")
             return
         self._moves.append((result, source, original_index))
+        self._moved.add(os.path.normcase(os.path.abspath(source)))
         self._images.pop(original_index)
         if self._images:
             self._index = original_index % len(self._images)
         else:
             self._index = 0
+        if not self._images:
+            total = self._sector_total()
+            if self._sector_index + 1 < total:
+                self._load_sector(self._sector_index + 1)
+                self._show_sector_change_toast()
         self._rebuild_strip()
         self._render_preview()
         self._update_counts()
@@ -916,6 +1099,8 @@ class ImageSorterWindow(tk.Frame):
             index = min(original_index, len(self._images))
             self._images.insert(index, result)
             self._index = index
+        self._moved.discard(os.path.normcase(os.path.abspath(result)))
+        self._update_sector_label()
         self._rebuild_strip()
         self._render_preview()
         self._update_counts()

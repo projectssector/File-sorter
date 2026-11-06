@@ -226,11 +226,25 @@ class GamepadWindow(tk.Frame):
                 justify="left",
                 anchor="w",
                 wraplength=560,
-            ).pack(fill="x", padx=8, pady=20)
-            return
+            ).pack(fill="x", padx=8, pady=(20, 8))
 
         for command in self.app.active:
             self._make_row(command)
+
+        tk.Label(
+            self.rows_inner,
+            text="SPECIAL ACTIONS",
+            bg=CARD,
+            fg=MUTED,
+            font=(FONT, 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=8, pady=(12, 4))
+
+        for label, token, description in (
+            ("Delete (skip image)", "__delete__", "Skip the current image while sorting pictures."),
+            ("Undo last move", "__undo__", "Undo the most recent image move."),
+        ):
+            self._make_special_row(label, token, description)
 
     def _make_row(self, command: dict) -> None:
         hotkey = command.get("hotkey", "")
@@ -302,14 +316,107 @@ class GamepadWindow(tk.Frame):
             takefocus=False,
         ).pack(side="left", padx=(8, 0))
 
-    def _button_for_hotkey(self, hotkey: str):
+    def _make_special_row(self, label: str, token: str, description: str) -> None:
+        current_button = self._button_for_value(token)
+
+        row = tk.Frame(
+            self.rows_inner,
+            bg=CARD_2,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        row.pack(fill="x", padx=4, pady=4)
+
+        badge = tk.Label(
+            row,
+            text=label,
+            bg="#334155",
+            fg="#ffffff",
+            font=(FONT, 9, "bold"),
+            padx=8,
+            pady=4,
+        )
+        badge.pack(side="left", padx=(10, 10), pady=10)
+
+        info = tk.Frame(row, bg=CARD_2)
+        info.pack(side="left", fill="x", expand=True, pady=8)
+        tk.Label(
+            info,
+            text=label,
+            bg=CARD_2,
+            fg=TEXT,
+            font=(FONT, 10, "bold"),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x")
+        tk.Label(
+            info,
+            text=description,
+            bg=CARD_2,
+            fg=MUTED,
+            font=(FONT, 8),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(2, 0))
+
+        controls = tk.Frame(row, bg=CARD_2)
+        controls.pack(side="right", padx=(8, 10), pady=8)
+
+        combo = ttk.Combobox(
+            controls,
+            values=["None"] + BUTTON_ORDER,
+            state="readonly",
+            width=12,
+            font=(FONT, 9),
+        )
+        combo.set(current_button if current_button else "None")
+        combo.pack(side="left")
+        combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event, t=token, c=combo: self._on_special_combo_changed(t, c),
+        )
+        ttk.Button(
+            controls,
+            text="Listen",
+            style="Secondary.TButton",
+            command=lambda t=token, lbl=label: self._start_listening(t, lbl),
+            takefocus=False,
+        ).pack(side="left", padx=(8, 0))
+
+    def _button_for_value(self, value: str):
         preferred = []
         for button in BUTTON_ORDER:
-            if self.app.gamepad_mapping.get(button) == hotkey:
+            if self.app.gamepad_mapping.get(button) == value:
                 preferred.append(button)
         if not preferred:
             return ""
         return preferred[0]
+
+    def _button_for_hotkey(self, hotkey: str):
+        return self._button_for_value(hotkey)
+
+    def _on_special_combo_changed(self, token: str, combo) -> None:
+        value = combo.get().strip()
+        if value == "None" or not value:
+            self._clear_value(token)
+        else:
+            self._assign_value(token, value)
+        self._build_rows()
+
+    def _assign_value(self, value: str, button: str) -> None:
+        mapping = self.app.gamepad_mapping
+        for existing_button, existing_value in list(mapping.items()):
+            if existing_value == value or existing_button == button:
+                mapping.pop(existing_button, None)
+        mapping[button] = value
+        self.app.save_gamepad_mapping()
+
+    def _clear_value(self, value: str) -> None:
+        mapping = self.app.gamepad_mapping
+        for button, existing_value in list(mapping.items()):
+            if existing_value == value:
+                mapping.pop(button, None)
+        self.app.save_gamepad_mapping()
 
     def _on_combo_changed(self, hotkey: str, combo) -> None:
         value = combo.get().strip()

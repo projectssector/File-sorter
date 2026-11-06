@@ -667,6 +667,17 @@ def is_image_file(path: str) -> bool:
         return False
 
 
+def is_previewable_image(path: str) -> bool:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:
+        return False
+
+
 def natural_sort_key(value):
     import re
 

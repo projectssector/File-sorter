@@ -710,6 +710,12 @@ class FileSorterApp:
                     if command is not None:
                         self._image_sorter._move_current(command)
                         return
+                    if hotkey == "__delete__":
+                        self._image_sorter.next_image()
+                        return
+                    if hotkey == "__undo__":
+                        self._image_sorter._undo_last_move()
+                        return
                     sorter = self._image_sorter
                     if button in ("DPadLeft", "Left"):
                         sorter.previous_image()
