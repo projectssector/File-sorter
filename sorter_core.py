@@ -672,7 +672,8 @@ def is_previewable_image(path: str) -> bool:
         from PIL import Image
 
         with Image.open(path) as image:
-            image.verify()
+            image.load()
+            image.convert("RGB")
         return True
     except Exception:
         return False

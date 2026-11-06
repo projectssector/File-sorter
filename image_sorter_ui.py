@@ -73,6 +73,7 @@ class ImageSorterWindow(tk.Frame):
             Image.new("RGB", THUMB_SIZE, CARD_2), master=self
         )
         self._thumb_refs = {}
+        self._thumb_cache = {}
         self._strip_labels = []
         self._strip_generation = 0
         self._thumb_job = None
@@ -187,8 +188,17 @@ class ImageSorterWindow(tk.Frame):
         card.grid_rowconfigure(0, weight=1)
         card.grid_columnconfigure(0, weight=1)
 
+        self.preview_pane = tk.PanedWindow(
+            card, orient=tk.VERTICAL, sashwidth=6, bg=BORDER, sashrelief=tk.FLAT
+        )
+        self.preview_pane.grid(row=0, column=0, sticky="nsew")
+
+        top_frame = tk.Frame(self.preview_pane, bg=CARD)
+        top_frame.grid_rowconfigure(0, weight=1)
+        top_frame.grid_columnconfigure(0, weight=1)
+
         self.canvas = tk.Canvas(
-            card, bg="#090d12", highlightthickness=0, bd=0, cursor="hand2",
+            top_frame, bg="#090d12", highlightthickness=0, bd=0, cursor="hand2",
             takefocus=True,
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
@@ -197,8 +207,15 @@ class ImageSorterWindow(tk.Frame):
         self.canvas.bind("<KeyPress>", self._on_key)
         self.bind("<KeyPress>", self._on_key)
 
-        info = tk.Frame(card, bg=CARD)
+        info = tk.Frame(top_frame, bg=CARD)
         info.grid(row=1, column=0, sticky="ew", padx=14, pady=(10, 4))
+
+        strip_frame = tk.Frame(self.preview_pane, bg=CARD)
+        strip_frame.grid_rowconfigure(0, weight=1)
+        strip_frame.grid_columnconfigure(0, weight=1)
+
+        self.preview_pane.add(top_frame, minsize=180, stretch="always")
+        self.preview_pane.add(strip_frame, minsize=60, stretch="never")
         self.name_label = tk.Label(
             info,
             text="No image selected",
@@ -231,8 +248,10 @@ class ImageSorterWindow(tk.Frame):
         )
         self.sector_label.pack(fill="x", pady=(4, 0))
 
-        strip_wrap = tk.Frame(card, bg=CARD)
-        strip_wrap.grid(row=2, column=0, sticky="ew", padx=10, pady=(4, 10))
+        strip_wrap = tk.Frame(strip_frame, bg=CARD)
+        strip_wrap.grid(row=0, column=0, sticky="nsew", padx=10, pady=(4, 10))
+        strip_frame.grid_rowconfigure(0, weight=1)
+        strip_frame.grid_columnconfigure(0, weight=1)
         strip_wrap.grid_columnconfigure(0, weight=1)
 
         self.strip_canvas = tk.Canvas(
@@ -387,6 +406,20 @@ class ImageSorterWindow(tk.Frame):
             text="Skip",
             style="Secondary.TButton",
             command=self.next_image,
+            takefocus=False,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            left,
+            text="<< Sector",
+            style="Secondary.TButton",
+            command=lambda: self._move_sector(-1),
+            takefocus=False,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            left,
+            text="Sector >>",
+            style="Secondary.TButton",
+            command=lambda: self._move_sector(1),
             takefocus=False,
         ).pack(side="left", padx=(8, 0))
         self.progress_label = tk.Label(
@@ -562,23 +595,33 @@ class ImageSorterWindow(tk.Frame):
     def _collect_with_no_preview(self, paths) -> list[str]:
         from sorter_core import collect_image_files, is_image_file, is_previewable_image
 
+        from sorter_core import is_image_file, is_previewable_image
+
         for raw in paths or []:
             candidate = Path(str(raw).strip().strip('"'))
             try:
-                if not candidate.is_dir():
-                    continue
-                no_preview = candidate / "no_preview"
-                for entry in list(candidate.iterdir()):
-                    if not entry.is_file() or not is_image_file(str(entry)):
-                        continue
-                    if is_previewable_image(str(entry)):
-                        continue
-                    no_preview.mkdir(exist_ok=True)
-                    target = unique_target(no_preview, entry.name)
-                    try:
-                        shutil.move(str(entry), str(target))
-                    except Exception:
-                        pass
+                if candidate.is_dir():
+                    no_preview = candidate / "no_preview"
+                    for entry in list(candidate.iterdir()):
+                        if not entry.is_file() or not is_image_file(str(entry)):
+                            continue
+                        if is_previewable_image(str(entry)):
+                            continue
+                        no_preview.mkdir(exist_ok=True)
+                        target = unique_target(no_preview, entry.name)
+                        try:
+                            shutil.move(str(entry), str(target))
+                        except Exception:
+                            pass
+                elif candidate.is_file() and is_image_file(str(candidate)):
+                    if not is_previewable_image(str(candidate)):
+                        no_preview = candidate.parent / "no_preview"
+                        no_preview.mkdir(exist_ok=True)
+                        target = unique_target(no_preview, candidate.name)
+                        try:
+                            shutil.move(str(candidate), str(target))
+                        except Exception:
+                            pass
             except Exception:
                 continue
         return collect_image_files(paths)
@@ -866,6 +909,21 @@ class ImageSorterWindow(tk.Frame):
         except Exception:
             pass
 
+    def _move_sector(self, direction: int) -> None:
+        total = self._sector_total()
+        if total <= 1:
+            return
+        new_index = self._sector_index + direction
+        if new_index < 0:
+            new_index = total - 1
+        if new_index >= total:
+            new_index = 0
+        self._load_sector(new_index)
+        self._index = 0
+        self._render_preview()
+        self._update_counts()
+        self._scroll_to_current_thumb()
+
     def previous_image(self) -> None:
         if not self._images:
             if self._sector_index > 0:
@@ -931,7 +989,7 @@ class ImageSorterWindow(tk.Frame):
         self._thumb_refs = {}
         self._current_strip_label = None
 
-        for index, path in enumerate(self._images[:MAX_THUMBS]):
+        for index, path in enumerate(self._images):
             label = tk.Label(
                 self.strip_inner,
                 image=self._placeholder,
@@ -947,15 +1005,6 @@ class ImageSorterWindow(tk.Frame):
             )
             self._strip_labels.append(label)
 
-        if len(self._images) > MAX_THUMBS:
-            tk.Label(
-                self.strip_inner,
-                text="+" + str(len(self._images) - MAX_THUMBS) + " more",
-                bg=CARD,
-                fg=MUTED,
-                font=(FONT, 8),
-            ).pack(side="left", padx=6)
-
         self._highlight_strip()
         self._thumb_job = self.after(30, self._thumb_batch, 0, self._strip_generation)
 
@@ -967,12 +1016,16 @@ class ImageSorterWindow(tk.Frame):
         for index in range(start, end):
             path = self._images[index]
             try:
-                with Image.open(path) as image:
-                    image = ImageOps.exif_transpose(image)
-                    if image.mode not in ("RGB", "RGBA"):
-                        image = image.convert("RGBA")
-                    image.thumbnail(THUMB_SIZE, Image.LANCZOS)
-                    photo = ImageTk.PhotoImage(image, master=self)
+                if path in self._thumb_cache:
+                    photo = self._thumb_cache[path]
+                else:
+                    with Image.open(path) as image:
+                        image = ImageOps.exif_transpose(image)
+                        if image.mode not in ("RGB", "RGBA"):
+                            image = image.convert("RGBA")
+                        image.thumbnail(THUMB_SIZE, Image.LANCZOS)
+                        photo = ImageTk.PhotoImage(image, master=self)
+                    self._thumb_cache[path] = photo
                 self._thumb_refs[index] = photo
                 if index < len(self._strip_labels):
                     self._strip_labels[index].configure(image=photo)
