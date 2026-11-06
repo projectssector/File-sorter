@@ -712,9 +712,11 @@ class FileSorterApp:
                         return
                     if hotkey == "__delete__":
                         self._image_sorter.next_image()
+                        self.show_toast("Skipped image", "Moved to the next image.", "info")
                         return
                     if hotkey == "__undo__":
                         self._image_sorter._undo_last_move()
+                        self.show_toast("Undo", "Last move undone.", "info")
                         return
                     sorter = self._image_sorter
                     if button in ("DPadLeft", "Left"):
@@ -745,6 +747,13 @@ class FileSorterApp:
             except Exception:
                 self._image_sorter = None
 
+        if hotkey in ("__delete__", "__undo__"):
+            self.show_toast(
+                "Sort Images not open",
+                "Open the Sort Images tab first.",
+                "warn",
+            )
+            return
         if command is None:
             return
         self._on_hotkey(command)
@@ -767,6 +776,14 @@ class FileSorterApp:
         if widget is self._image_sorter and self._image_sorter is not None:
             try:
                 self._image_sorter.focus_preview()
+                self.root.bind("<Delete>", lambda _e: self._image_sorter.next_image())
+                self.root.bind("<BackSpace>", lambda _e: self._image_sorter.next_image())
+            except Exception:
+                pass
+        else:
+            try:
+                self.root.unbind("<Delete>")
+                self.root.unbind("<BackSpace>")
             except Exception:
                 pass
 

@@ -196,6 +196,7 @@ class ImageSorterWindow(tk.Frame):
         top_frame = tk.Frame(self.preview_pane, bg=CARD)
         top_frame.grid_rowconfigure(0, weight=1)
         top_frame.grid_columnconfigure(0, weight=1)
+        self.preview_frame = top_frame
 
         self.canvas = tk.Canvas(
             top_frame, bg="#090d12", highlightthickness=0, bd=0, cursor="hand2",
@@ -247,6 +248,28 @@ class ImageSorterWindow(tk.Frame):
             justify="left",
         )
         self.sector_label.pack(fill="x", pady=(4, 0))
+
+        self.loading_overlay = tk.Frame(self.preview_frame, bg=BG)
+        self.loading_label = tk.Label(
+            self.loading_overlay,
+            text="Loading images and preparing sectors...",
+            bg=BG,
+            fg=TEXT,
+            font=(FONT, 14, "bold"),
+        )
+        self.loading_label.place(relx=0.5, rely=0.42, anchor="center")
+        self.loading_progress = ttk.Progressbar(
+            self.loading_overlay, mode="indeterminate", length=260
+        )
+        self.loading_progress.place(relx=0.5, rely=0.5, anchor="center")
+        self.loading_detail = tk.Label(
+            self.loading_overlay,
+            text="Please wait",
+            bg=BG,
+            fg=MUTED,
+            font=(FONT, 9),
+        )
+        self.loading_detail.place(relx=0.5, rely=0.58, anchor="center")
 
         strip_wrap = tk.Frame(strip_frame, bg=CARD)
         strip_wrap.grid(row=0, column=0, sticky="nsew", padx=10, pady=(4, 10))
@@ -580,6 +603,7 @@ class ImageSorterWindow(tk.Frame):
             return
         self._loading_images = True
         self._set_status("Loading images...")
+        self._show_loading_overlay()
         self._update_sector_label()
         threading.Thread(
             target=self._load_images_worker, args=(list(paths or []),), daemon=True
@@ -628,6 +652,7 @@ class ImageSorterWindow(tk.Frame):
 
     def _apply_loaded_images(self, images) -> None:
         self._loading_images = False
+        self._hide_loading_overlay()
         existing = {os.path.normcase(os.path.abspath(path)) for path in self._all_images}
         added = 0
         for image in images or []:
@@ -716,6 +741,21 @@ class ImageSorterWindow(tk.Frame):
         self._set_status(
             "Sector " + str(self._sector_index + 1) + " of " + str(total) + " ready."
         )
+
+    def _show_loading_overlay(self) -> None:
+        try:
+            self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.loading_progress.start(12)
+            self.loading_overlay.lift()
+        except Exception:
+            pass
+
+    def _hide_loading_overlay(self) -> None:
+        try:
+            self.loading_progress.stop()
+            self.loading_overlay.place_forget()
+        except Exception:
+            pass
 
     def _add_files_dialog(self) -> None:
         files = filedialog.askopenfilenames(
