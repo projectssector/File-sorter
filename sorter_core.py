@@ -673,7 +673,6 @@ def is_previewable_image(path: str) -> bool:
 
         with Image.open(path) as image:
             image.load()
-            image.convert("RGB")
         return True
     except Exception:
         return False

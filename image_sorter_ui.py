@@ -74,6 +74,8 @@ class ImageSorterWindow(tk.Frame):
         )
         self._thumb_refs = {}
         self._thumb_cache = {}
+        self._loaded_thumbs = set()
+        self._image_info_cache = {}
         self._strip_labels = []
         self._strip_generation = 0
         self._thumb_job = None
@@ -294,6 +296,7 @@ class ImageSorterWindow(tk.Frame):
         strip_scroll.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         self.strip_canvas.configure(xscrollcommand=strip_scroll.set)
         self.strip_canvas.bind("<MouseWheel>", self._scroll_strip)
+        self.strip_canvas.bind("<Configure>", lambda _event: self.after(50, self._load_visible_thumbs))
 
         self.strip_inner = tk.Frame(self.strip_canvas, bg=CARD)
         self._strip_window = self.strip_canvas.create_window(
@@ -301,9 +304,7 @@ class ImageSorterWindow(tk.Frame):
         )
         self.strip_inner.bind(
             "<Configure>",
-            lambda _event: self.strip_canvas.configure(
-                scrollregion=self.strip_canvas.bbox("all")
-            ),
+            lambda _event: None,
         )
         self.strip_canvas.bind(
             "<Configure>",
@@ -614,7 +615,10 @@ class ImageSorterWindow(tk.Frame):
             images = self._collect_with_no_preview(paths)
         except Exception:
             images = []
-        self.app._ui(self._apply_loaded_images, images)
+        try:
+            self.app._ui(self._apply_loaded_images, images)
+        except Exception:
+            pass
 
     def _collect_with_no_preview(self, paths) -> list[str]:
         from sorter_core import collect_image_files, is_image_file, is_previewable_image
@@ -904,10 +908,15 @@ class ImageSorterWindow(tk.Frame):
             + short_path(str(Path(path).parent), 2)
         )
         try:
-            size = format_size(os.path.getsize(path))
-            with Image.open(path) as image:
-                details += "   -   " + str(image.width) + " x " + str(image.height)
-            details += "   -   " + size
+            if path in self._image_info_cache:
+                width_px, height_px, size = self._image_info_cache[path]
+            else:
+                size = os.path.getsize(path)
+                with Image.open(path) as image:
+                    width_px, height_px = image.width, image.height
+                self._image_info_cache[path] = (width_px, height_px, size)
+            details += "   -   " + str(width_px) + " x " + str(height_px)
+            details += "   -   " + format_size(size)
         except Exception:
             pass
         self.meta_label.configure(text=details)
@@ -1029,31 +1038,43 @@ class ImageSorterWindow(tk.Frame):
         self._thumb_refs = {}
         self._current_strip_label = None
 
-        for index, path in enumerate(self._images):
-            label = tk.Label(
-                self.strip_inner,
-                image=self._placeholder,
-                bg=CARD_2,
-                bd=0,
-                padx=2,
-                pady=2,
-                cursor="hand2",
+        self._strip_labels = [None] * len(self._images)
+        try:
+            for child in self.strip_inner.winfo_children():
+                child.destroy()
+        except Exception:
+            pass
+        self._loaded_thumbs.clear()
+        thumb_width = THUMB_SIZE[0] + 10
+        total_width = max(1, len(self._images) * thumb_width)
+        try:
+            self.strip_canvas.configure(
+                scrollregion=(0, 0, total_width, THUMB_SIZE[1] + 12)
             )
-            label.pack(side="left", padx=3, pady=4)
-            label.bind(
-                "<Button-1>", lambda _event, i=index: self._select_index(i)
-            )
-            self._strip_labels.append(label)
-
+        except Exception:
+            pass
         self._highlight_strip()
-        self._thumb_job = self.after(30, self._thumb_batch, 0, self._strip_generation)
+        self.after(50, self._load_visible_thumbs)
 
-    def _thumb_batch(self, start: int, generation: int) -> None:
-        self._thumb_job = None
-        if self._closing or generation != self._strip_generation:
+    def _load_visible_thumbs(self) -> None:
+        if self._closing or not self._strip_labels:
             return
-        end = min(start + 8, len(self._strip_labels))
+        try:
+            self.update_idletasks()
+            width = max(1, self.strip_canvas.winfo_width())
+            left = self.strip_canvas.canvasx(0)
+            right = left + width
+            thumb_width = THUMB_SIZE[0] + 10
+            start = max(0, int(left // thumb_width) - 2)
+            end = min(len(self._strip_labels), int(right // thumb_width) + 4)
+        except Exception:
+            start, end = 0, min(24, len(self._strip_labels))
+        loaded_any = False
         for index in range(start, end):
+            if index in self._loaded_thumbs:
+                continue
+            if index >= len(self._images):
+                continue
             path = self._images[index]
             try:
                 if path in self._thumb_cache:
@@ -1067,14 +1088,80 @@ class ImageSorterWindow(tk.Frame):
                         photo = ImageTk.PhotoImage(image, master=self)
                     self._thumb_cache[path] = photo
                 self._thumb_refs[index] = photo
-                if index < len(self._strip_labels):
-                    self._strip_labels[index].configure(image=photo)
+                label = self._ensure_strip_label(index)
+                if label is not None:
+                    label.configure(image=photo)
+                self._loaded_thumbs.add(index)
+                loaded_any = True
+            except Exception:
+                pass
+        if loaded_any and end < len(self._strip_labels):
+            self.after_idle(self._load_visible_thumbs)
+        self.after_idle(self._load_next_thumb_chunk, max(end, 0))
+
+    def _load_next_thumb_chunk(self, start: int) -> None:
+        if self._closing or not self._strip_labels:
+            return
+        chunk_size = 16
+        end = min(start + chunk_size, len(self._strip_labels))
+        loaded_any = False
+        for index in range(start, end):
+            if index in self._loaded_thumbs:
+                continue
+            if index >= len(self._images):
+                continue
+            path = self._images[index]
+            try:
+                if path in self._thumb_cache:
+                    photo = self._thumb_cache[path]
+                else:
+                    with Image.open(path) as image:
+                        image = ImageOps.exif_transpose(image)
+                        if image.mode not in ("RGB", "RGBA"):
+                            image = image.convert("RGBA")
+                        image.thumbnail(THUMB_SIZE, Image.LANCZOS)
+                        photo = ImageTk.PhotoImage(image, master=self)
+                    self._thumb_cache[path] = photo
+                self._thumb_refs[index] = photo
+                label = self._ensure_strip_label(index)
+                if label is not None:
+                    label.configure(image=photo)
+                self._loaded_thumbs.add(index)
+                loaded_any = True
             except Exception:
                 pass
         if end < len(self._strip_labels):
-            self._thumb_job = self.after(
-                20, self._thumb_batch, end, generation
+            self.after_idle(self._load_next_thumb_chunk, end)
+
+    def _ensure_strip_label(self, index: int):
+        if index < 0 or index >= len(self._strip_labels):
+            return None
+        label = self._strip_labels[index]
+        if label is not None:
+            try:
+                if label.winfo_exists():
+                    return label
+            except Exception:
+                pass
+        try:
+            label = tk.Label(
+                self.strip_inner,
+                image=self._placeholder,
+                bg=CARD_2,
+                bd=0,
+                padx=2,
+                pady=2,
+                cursor="hand2",
             )
+            thumb_width = THUMB_SIZE[0] + 10
+            label.place(x=index * thumb_width, y=4)
+            label.bind(
+                "<Button-1>", lambda _event, i=index: self._select_index(i)
+            )
+            self._strip_labels[index] = label
+            return label
+        except Exception:
+            return None
 
     def _highlight_strip(self) -> None:
         if self._current_strip_label is not None:
@@ -1088,14 +1175,21 @@ class ImageSorterWindow(tk.Frame):
             self._current_strip_label = None
         if not self._images or self._index >= len(self._strip_labels):
             return
-        label = self._strip_labels[self._index]
-        label.configure(bg=ACCENT, highlightbackground=ACCENT, highlightthickness=2)
-        self._current_strip_label = label
+        label = self._ensure_strip_label(self._index)
+        if label is None:
+            return
+        try:
+            label.configure(bg=ACCENT, highlightbackground=ACCENT, highlightthickness=2)
+            self._current_strip_label = label
+        except Exception:
+            pass
 
     def _scroll_to_current_thumb(self) -> None:
         if self._index >= len(self._strip_labels):
             return
-        label = self._strip_labels[self._index]
+        label = self._ensure_strip_label(self._index)
+        if label is None:
+            return
         try:
             self.update_idletasks()
             width = max(1, self.strip_canvas.winfo_width())
@@ -1112,6 +1206,7 @@ class ImageSorterWindow(tk.Frame):
                 self.strip_canvas.xview_moveto(
                     max(0.0, (right - width) / content_width)
                 )
+            self.after(50, self._load_visible_thumbs)
         except Exception:
             pass
 
