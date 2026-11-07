@@ -1,12 +1,12 @@
 # File Sorter
 
-A Windows desktop app for filing selected files into destination folders with global hotkeys, an image sorter, and an optional Xbox-compatible gamepad.
+A Windows desktop app for filing selected files into destination folders with global hotkeys, a media sorter, and an optional Xbox-compatible gamepad.
 
 ## Features
 
 - Global hotkeys that move the current File Explorer selection to configured destination folders.
 - Command Memory: deleted commands are retained and can be restored.
-- Image Sorter tab: preview images, move them with keyboard or destination buttons, undo, open original.
+- Media Sorter tab: preview images and videos, move them with keyboard or destination buttons, undo, open original. Images are batched into sectors of 2000 and videos into sectors of 500.
 - Gamepad tab: detect a controller and map buttons to commands or navigation.
 - Pause/resume hotkeys, toast notifications, dark UI.
 

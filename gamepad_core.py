@@ -70,6 +70,8 @@ BUTTON_MASKS = {
 }
 
 TRIGGER_THRESHOLD = 60
+HOLD_DELAY = 0.35
+HOLD_REPEAT = 0.07
 DEFAULT_MAPPING = {"Y": "1", "LB": "2", "X": "3"}
 
 AMGP_BUTTON_NAMES = {
@@ -155,14 +157,17 @@ def _buttons_from_state(state) -> set[str]:
 class GamepadManager:
     """Poll XInput slots in the background and report button presses."""
 
-    def __init__(self, on_button=None, on_connection_change=None):
+    def __init__(self, on_button=None, on_connection_change=None, on_button_hold=None):
         self._on_button = on_button
         self._on_connection_change = on_connection_change
+        self._on_button_hold = on_button_hold
         self._thread = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._connected: list[dict] = []
         self._last_buttons: dict[int, set[str]] = {}
+        self._held_since: dict[tuple[int, str], float] = {}
+        self._next_repeat: dict[tuple[int, str], float] = {}
         self._error = None
 
     @property
@@ -238,11 +243,19 @@ class GamepadManager:
                 except Exception:
                     logging.exception("Gamepad connection callback failed")
 
+        now = time.monotonic()
         for slot, state in states.items():
             buttons = _buttons_from_state(state)
             previous = self._last_buttons.get(slot, set())
             presses = buttons - previous
             self._last_buttons[slot] = buttons
+
+            for button in BUTTON_ORDER:
+                if button in presses:
+                    key = (slot, button)
+                    self._held_since[key] = now
+                    self._next_repeat[key] = now + HOLD_DELAY
+
             if presses and self._on_button is not None:
                 for button in BUTTON_ORDER:
                     if button in presses:
@@ -251,9 +264,37 @@ class GamepadManager:
                         except Exception:
                             logging.exception("Gamepad button callback failed")
 
+            if self._on_button_hold is None:
+                continue
+            for button in BUTTON_ORDER:
+                key = (slot, button)
+                if button not in buttons:
+                    self._held_since.pop(key, None)
+                    self._next_repeat.pop(key, None)
+                    continue
+                if button in presses:
+                    continue
+                held_since = self._held_since.get(key)
+                if held_since is None:
+                    self._held_since[key] = now
+                    self._next_repeat[key] = now + HOLD_DELAY
+                    continue
+                due = self._next_repeat.get(key)
+                if due is None:
+                    due = held_since + HOLD_DELAY
+                if now >= due:
+                    self._next_repeat[key] = now + HOLD_REPEAT
+                    try:
+                        self._on_button_hold(button, slot)
+                    except Exception:
+                        logging.exception("Gamepad hold callback failed")
+
         for slot in list(self._last_buttons):
             if slot not in states:
                 self._last_buttons.pop(slot, None)
+                for key in [k for k in self._held_since if k[0] == slot]:
+                    self._held_since.pop(key, None)
+                    self._next_repeat.pop(key, None)
 
 
 def load_gamepad_mapping(path: Path = GAMEPAD_FILE) -> dict[str, str]:

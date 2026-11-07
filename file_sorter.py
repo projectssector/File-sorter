@@ -38,7 +38,7 @@ from sorter_core import (
     acquire_single_instance,
     apply_dark_titlebar,
     apply_icon,
-    collect_image_files,
+    collect_media_files,
     command_signature,
     copy_selection_and_read,
     enable_dpi_awareness,
@@ -109,7 +109,9 @@ class FileSorterApp:
 
         self.gamepad_mapping = load_or_seed_mapping()
         self.gamepads = GamepadManager(
-            self._on_gamepad_button, self._on_gamepad_connection
+            self._on_gamepad_button,
+            self._on_gamepad_connection,
+            on_button_hold=self._on_gamepad_hold,
         )
         gamepad_ok, gamepad_error = self.gamepads.start()
         self._gamepads_ok = gamepad_ok
@@ -119,7 +121,7 @@ class FileSorterApp:
 
         apply_dark_titlebar(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(60, self._poll_ui_queue)
+        self.root.after(30, self._poll_ui_queue)
         self._set_ready_status()
 
         if smoke_test:
@@ -168,8 +170,8 @@ class FileSorterApp:
         tk.Label(
             header,
             text=(
-                "Select files in Explorer and press a hotkey, or use Sort Images "
-                "to view and file pictures without Explorer."
+                "Select files in Explorer and press a hotkey, or use Sort Media "
+                "to view and file pictures and videos without Explorer."
             ),
             bg=BG,
             fg=MUTED,
@@ -266,7 +268,7 @@ class FileSorterApp:
 
         ttk.Button(
             left,
-            text="Sort Images",
+            text="Sort Media",
             style="Accent.TButton",
             command=self.open_image_sorter,
             takefocus=False,
@@ -379,15 +381,15 @@ class FileSorterApp:
             paths = self.root.tk.splitlist(event.data)
         except Exception:
             paths = [event.data]
-        images = collect_image_files(paths)
-        if not images:
+        media = collect_media_files(paths)
+        if not media:
             self.show_toast(
-                "No images found",
-                "Drop image files or a folder that contains images.",
+                "No images or videos found",
+                "Drop image or video files, or a folder that contains them.",
                 "warn",
             )
         else:
-            self.open_image_sorter(images)
+            self.open_image_sorter(media)
         return getattr(event, "action", "copy")
 
     def _refresh_list(self) -> None:
@@ -467,7 +469,7 @@ class FileSorterApp:
                     logging.exception("UI task failed")
         except queue.Empty:
             pass
-        self.root.after(60, self._poll_ui_queue)
+        self.root.after(30, self._poll_ui_queue)
 
     def _ui(self, function, *args, **kwargs) -> None:
         if self._closing:
@@ -598,7 +600,7 @@ class FileSorterApp:
                 pass
             self._image_sorter = None
         self._image_sorter = ImageSorterWindow(self.notebook, self, files)
-        self.notebook.add(self._image_sorter, text="Sort Images")
+        self.notebook.add(self._image_sorter, text="Sort Media")
         self.notebook.select(self._image_sorter)
 
     def open_memory(self) -> None:
@@ -695,16 +697,26 @@ class FileSorterApp:
     def _on_gamepad_button(self, button: str, slot: int) -> None:
         self._ui(self._handle_gamepad_button, button, slot)
 
-    def _handle_gamepad_button(self, button: str, slot: int) -> None:
+    def _on_gamepad_hold(self, button: str, slot: int) -> None:
+        if button in ("DPadLeft", "DPadRight", "Left", "Right"):
+            self._ui(self._handle_gamepad_button, button, slot, True)
+
+    def _handle_gamepad_button(self, button: str, slot: int, repeated=False) -> None:
         if self._closing:
+            return
+        if repeated and button not in ("DPadLeft", "DPadRight", "Left", "Right"):
             return
         if self._gamepad_window is not None:
             try:
                 if self._gamepad_window.winfo_exists():
-                    self._gamepad_window.note_button(button)
                     if self._gamepad_window.is_listening():
+                        if repeated:
+                            return
+                        self._gamepad_window.note_button(button)
                         self._gamepad_window.capture_button(button)
                         return
+                    if not repeated:
+                        self._gamepad_window.note_button(button)
             except Exception:
                 pass
         if self.paused:
@@ -716,13 +728,19 @@ class FileSorterApp:
             try:
                 if self._image_sorter.winfo_exists():
                     if command is not None:
+                        if repeated:
+                            return
                         self._image_sorter._move_current(command)
                         return
                     if hotkey == "__delete__":
+                        if repeated:
+                            return
                         self._image_sorter.next_image()
                         self.show_toast("Skipped image", "Moved to the next image.", "info")
                         return
                     if hotkey == "__undo__":
+                        if repeated:
+                            return
                         self._image_sorter._undo_last_move()
                         self.show_toast("Undo", "Last move undone.", "info")
                         return
@@ -732,6 +750,8 @@ class FileSorterApp:
                         return
                     if button in ("DPadRight", "Right"):
                         sorter.next_image()
+                        return
+                    if repeated:
                         return
                     if button in ("DPadUp", "Up"):
                         sorter._select_index(0)
@@ -755,10 +775,12 @@ class FileSorterApp:
             except Exception:
                 self._image_sorter = None
 
+        if repeated:
+            return
         if hotkey in ("__delete__", "__undo__"):
             self.show_toast(
-                "Sort Images not open",
-                "Open the Sort Images tab first.",
+                "Sort Media not open",
+                "Open the Sort Media tab first.",
                 "warn",
             )
             return
@@ -836,7 +858,7 @@ class FileSorterApp:
                     self.show_toast,
                     "Nothing moved",
                     "File Explorer is not the active window. "
-                    "Use Sort Images to file pictures opened in Photos.",
+                    "Use Sort Media to file pictures and videos.",
                     "warn",
                 )
                 return

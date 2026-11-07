@@ -49,6 +49,32 @@ IMAGE_EXTENSIONS = {
     ".avif",
 }
 
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".m4v",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+    ".m2ts",
+    ".mts",
+    ".ts",
+    ".3gp",
+    ".3g2",
+    ".ogv",
+    ".vob",
+    ".asf",
+    ".rm",
+    ".rmvb",
+    ".divx",
+    ".f4v",
+    ".mxf",
+}
+
 
 def default_data_dir() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
@@ -667,15 +693,236 @@ def is_image_file(path: str) -> bool:
         return False
 
 
+def is_video_file(path: str) -> bool:
+    try:
+        return Path(path).suffix.lower() in VIDEO_EXTENSIONS
+    except Exception:
+        return False
+
+
+def is_media_file(path: str) -> bool:
+    return is_image_file(path) or is_video_file(path)
+
+
 def is_previewable_image(path: str) -> bool:
+    """Check that Pillow can open the file, avoiding a full decode when possible."""
     try:
         from PIL import Image
-
+    except Exception:
+        return False
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:
+        pass
+    try:
         with Image.open(path) as image:
             image.load()
         return True
     except Exception:
         return False
+
+
+class _ShellSize(ctypes.Structure):
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+
+class _ShellGuid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _ShellBitmap(ctypes.Structure):
+    _fields_ = [
+        ("bmType", ctypes.c_long),
+        ("bmWidth", ctypes.c_long),
+        ("bmHeight", ctypes.c_long),
+        ("bmWidthBytes", ctypes.c_long),
+        ("bmPlanes", wintypes.WORD),
+        ("bmBitsPixel", wintypes.WORD),
+        ("bmBits", ctypes.c_void_p),
+    ]
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", ctypes.c_long),
+        ("biHeight", ctypes.c_long),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", ctypes.c_long),
+        ("biYPelsPerMeter", ctypes.c_long),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+def _guid_from_string(text: str) -> _ShellGuid:
+    text = text.strip("{}")
+    parts = text.split("-")
+    guid = _ShellGuid()
+    guid.Data1 = int(parts[0], 16)
+    guid.Data2 = int(parts[1], 16)
+    guid.Data3 = int(parts[2], 16)
+    tail = bytes.fromhex(parts[3] + parts[4])
+    for index in range(8):
+        guid.Data4[index] = tail[index]
+    return guid
+
+
+_gdi32 = ctypes.WinDLL("gdi32")
+_ole32 = ctypes.WinDLL("ole32")
+_ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+_ole32.CoInitialize.restype = ctypes.c_long
+_ole32.CoUninitialize.argtypes = []
+_ole32.CoUninitialize.restype = None
+shell32.SHCreateItemFromParsingName.argtypes = [
+    wintypes.LPCWSTR,
+    ctypes.c_void_p,
+    ctypes.POINTER(_ShellGuid),
+    ctypes.POINTER(ctypes.c_void_p),
+]
+shell32.SHCreateItemFromParsingName.restype = ctypes.c_long
+_gdi32.GetObjectW.argtypes = [wintypes.HGDIOBJ, ctypes.c_int, ctypes.c_void_p]
+_gdi32.GetObjectW.restype = ctypes.c_int
+_gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+_gdi32.CreateCompatibleDC.restype = wintypes.HDC
+_gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+_gdi32.SelectObject.restype = wintypes.HGDIOBJ
+_gdi32.GetDIBits.argtypes = [
+    wintypes.HDC,
+    wintypes.HBITMAP,
+    wintypes.UINT,
+    wintypes.UINT,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    wintypes.UINT,
+]
+_gdi32.GetDIBits.restype = ctypes.c_int
+_gdi32.DeleteDC.argtypes = [wintypes.HDC]
+_gdi32.DeleteDC.restype = wintypes.BOOL
+_gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+_gdi32.DeleteObject.restype = wintypes.BOOL
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.GetDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
+
+_IID_ISHELLITEMIMAGEFACTORY = _guid_from_string(
+    "{bcc18b79-ba16-442f-80c4-8a59c30c463b}"
+)
+
+
+def _vtable_function(pointer, index, restype, argtypes):
+    table = ctypes.cast(
+        pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+    ).contents
+    prototype = ctypes.WINFUNCTYPE(restype, *argtypes)
+    return prototype(table[index])
+
+
+def shell_thumbnail(path: str, size=(256, 256), flags: int = 0x08):
+    """Return a PIL image thumbnail for any file Windows can preview.
+
+    Uses the Windows Shell thumbnail provider, so videos get a real frame
+    preview without needing ffmpeg or any extra dependency.
+    """
+    from PIL import Image
+
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
+    initialized = _ole32.CoInitialize(None) >= 0
+    item = ctypes.c_void_p()
+    try:
+        result = shell32.SHCreateItemFromParsingName(
+            str(path), None, ctypes.byref(_IID_ISHELLITEMIMAGEFACTORY), ctypes.byref(item)
+        )
+        if result != 0 or not item:
+            raise OSError(
+                "Could not open file for thumbnails (error "
+                + hex(result & 0xFFFFFFFF)
+                + ")"
+            )
+        get_image = _vtable_function(
+            item,
+            3,
+            ctypes.c_long,
+            [
+                ctypes.c_void_p,
+                _ShellSize,
+                ctypes.c_int,
+                ctypes.POINTER(wintypes.HBITMAP),
+            ],
+        )
+        bitmap = wintypes.HBITMAP()
+        result = get_image(
+            item, _ShellSize(width, height), int(flags), ctypes.byref(bitmap)
+        )
+        if result != 0 or not bitmap:
+            if flags:
+                release = _vtable_function(item, 2, ctypes.c_ulong, [ctypes.c_void_p])
+                release(item)
+                item = ctypes.c_void_p()
+                return shell_thumbnail(path, size, 0)
+            raise OSError(
+                "Windows could not build a thumbnail (error "
+                + hex(result & 0xFFFFFFFF)
+                + ")"
+            )
+        try:
+            info = _ShellBitmap()
+            if not _gdi32.GetObjectW(
+                bitmap, ctypes.sizeof(_ShellBitmap), ctypes.byref(info)
+            ):
+                raise OSError("Could not read the thumbnail bitmap.")
+            bmp_width = int(info.bmWidth)
+            bmp_height = int(info.bmHeight)
+            if bmp_width <= 0 or bmp_height <= 0:
+                raise OSError("Thumbnail bitmap was empty.")
+            header = _BitmapInfoHeader()
+            header.biSize = ctypes.sizeof(_BitmapInfoHeader)
+            header.biWidth = bmp_width
+            header.biHeight = -bmp_height
+            header.biPlanes = 1
+            header.biBitCount = 32
+            header.biCompression = 0
+            buffer = ctypes.create_string_buffer(bmp_width * bmp_height * 4)
+            screen_dc = user32.GetDC(None)
+            memory_dc = _gdi32.CreateCompatibleDC(screen_dc)
+            previous = _gdi32.SelectObject(memory_dc, bitmap)
+            try:
+                _gdi32.GetDIBits(
+                    memory_dc,
+                    bitmap,
+                    0,
+                    bmp_height,
+                    buffer,
+                    ctypes.byref(header),
+                    0,
+                )
+            finally:
+                _gdi32.SelectObject(memory_dc, previous)
+                _gdi32.DeleteDC(memory_dc)
+                user32.ReleaseDC(None, screen_dc)
+            return Image.frombuffer(
+                "RGBA", (bmp_width, bmp_height), buffer, "raw", "BGRA", 0, 1
+            ).convert("RGB")
+        finally:
+            _gdi32.DeleteObject(bitmap)
+    finally:
+        if item:
+            release = _vtable_function(item, 2, ctypes.c_ulong, [ctypes.c_void_p])
+            release(item)
+        if initialized:
+            _ole32.CoUninitialize()
 
 
 def natural_sort_key(value):
@@ -689,6 +936,15 @@ def natural_sort_key(value):
 
 def collect_image_files(paths) -> list[str]:
     """Expand files/folders into a de-duplicated list of image files."""
+    return _collect_files(paths, is_image_file)
+
+
+def collect_media_files(paths) -> list[str]:
+    """Expand files/folders into a de-duplicated list of images and videos."""
+    return _collect_files(paths, is_media_file)
+
+
+def _collect_files(paths, predicate) -> list[str]:
     found = []
     seen = set()
 
@@ -700,7 +956,7 @@ def collect_image_files(paths) -> list[str]:
             key = os.path.normcase(str(candidate))
         if key in seen:
             return
-        if candidate.is_file() and is_image_file(str(candidate)):
+        if candidate.is_file() and predicate(str(candidate)):
             seen.add(key)
             found.append(str(candidate))
 

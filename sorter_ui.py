@@ -173,6 +173,16 @@ def setup_styles(root) -> None:
     )
 
     style.configure(
+        "FileSorter.Horizontal.TProgressbar",
+        troughcolor=CARD_2,
+        background=ACCENT,
+        bordercolor=BORDER,
+        lightcolor=ACCENT,
+        darkcolor=ACCENT,
+        thickness=8,
+    )
+
+    style.configure(
         "TNotebook",
         background=BG,
         borderwidth=0,
